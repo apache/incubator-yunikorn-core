@@ -19,8 +19,11 @@
 package scheduler
 
 import (
+	"fmt"
+	"math/rand"
 	"strconv"
 	"testing"
+	"time"
 
 	"gotest.tools/assert"
 
@@ -499,8 +502,8 @@ func TestRemoveAllocAsk(t *testing.T) {
 	var delta2 *resources.Resource
 	delta2, err = app.addAllocationAsk(ask)
 	assert.NilError(t, err, "ask 2 should have been added to app, returned delta")
-	if len(app.requests) != 2 {
-		t.Fatalf("missing asks from app expected 2 got %d", len(app.requests))
+	if app.requests.Size() != 2 {
+		t.Fatalf("missing asks from app expected 2 got %d", app.requests.Size())
 	}
 	if !resources.Equals(resources.Add(delta1, delta2), app.GetPendingResource()) {
 		t.Errorf("pending resource not updated correctly, expected %v but was: %v", resources.Add(delta1, delta2), app.GetPendingResource())
@@ -518,8 +521,8 @@ func TestRemoveAllocAsk(t *testing.T) {
 		t.Errorf("ask should have been removed from app, err %v, expected delta %v but was: %v, (reserved released = %d)", err, delta1, delta, reservedAsks)
 	}
 	reservedAsks = app.removeAllocationAsk("")
-	if len(app.requests) != 0 || reservedAsks != 0 {
-		t.Fatalf("asks not removed as expected 0 got %d, (reserved released = %d)", len(app.requests), reservedAsks)
+	if app.requests.Size() != 0 || reservedAsks != 0 {
+		t.Fatalf("asks not removed as expected 0 got %d, (reserved released = %d)", app.requests.Size(), reservedAsks)
 	}
 	if !resources.IsZero(app.GetPendingResource()) {
 		t.Errorf("pending resource not updated correctly, expected zero but was: %v", app.GetPendingResource())
@@ -564,31 +567,25 @@ func TestSortRequests(t *testing.T) {
 	if app == nil || app.ApplicationInfo.ApplicationID != appID {
 		t.Fatalf("app create failed which should not have %v", app)
 	}
-	if app.sortedRequests != nil {
+	queue, err := createRootQueue(nil)
+	if err != nil {
+		t.Fatalf("queue create failed: %v", err)
+	}
+	app.queue = queue
+	if app.requests.GetPendingRequestIterator().HasNext() {
 		t.Fatalf("new app create should not have sorted requests: %v", app)
 	}
-	app.sortRequests(true)
-	if app.sortedRequests != nil {
-		t.Fatalf("after sort call (no pending resources) list must be nil: %v", app.sortedRequests)
-	}
-
 	res := resources.NewResourceFromMap(map[string]resources.Quantity{"first": 1})
 	for i := 1; i < 4; i++ {
 		num := strconv.Itoa(i)
 		ask := newAllocationAsk("ask-"+num, appID, res)
 		ask.priority = int32(i)
-		app.requests[ask.AskProto.AllocationKey] = ask
+		_, err := app.addAllocationAsk(ask)
+		assert.NilError(t, err, "failed to add allocation ask")
 	}
-	app.sortRequests(true)
-	if len(app.sortedRequests) != 3 {
-		t.Fatalf("app sorted requests not correct: %v", app.sortedRequests)
-	}
-	allocKey := app.sortedRequests[0].AskProto.AllocationKey
-	delete(app.requests, allocKey)
-	app.sortRequests(true)
-	if len(app.sortedRequests) != 2 {
-		t.Fatalf("app sorted requests not correct after removal: %v", app.sortedRequests)
-	}
+	assertAskPriorities(t, app.requests.GetPendingRequestIterator(), []int32{3, 2, 1})
+	app.removeAllocationAsk("ask-3")
+	assertAskPriorities(t, app.requests.GetPendingRequestIterator(), []int32{2, 1})
 }
 
 func TestStateChangeOnAskUpdate(t *testing.T) {
@@ -651,10 +648,103 @@ func TestStateChangeOnAskUpdate(t *testing.T) {
 	app.allocating = res
 	// add an ask with the repeat set to 0 (cannot use the proper way)
 	ask = newAllocationAskRepeat(askID, appID, res, 0)
-	app.requests[askID] = ask
+	app.requests.AddRequest(ask)
 
 	// with allocations in flight we should not change state
 	released = app.removeAllocationAsk(askID)
 	assert.Equal(t, released, 0, "allocation ask should not have been reserved")
 	assert.Assert(t, app.isStarting(), "application changed state unexpectedly: %s", app.ApplicationInfo.GetApplicationState())
+}
+
+func BenchmarkIteratePendingRequests(b *testing.B) {
+	tests := []struct {
+		numPriorities          int
+		numRequestsPerPriority int
+		pendingPercentage      float32
+	}{
+		// expect the performance is only related to the number of pending requests,
+		// won't be affected by other factors such as the number of priorities and pending percentage.
+
+		// cases: 10,000 pending requests in total with different number of priorities
+		{numPriorities: 1, numRequestsPerPriority: 10000, pendingPercentage: 1.0},
+		{numPriorities: 2, numRequestsPerPriority: 5000, pendingPercentage: 1.0},
+		{numPriorities: 5, numRequestsPerPriority: 2000, pendingPercentage: 1.0},
+		{numPriorities: 10, numRequestsPerPriority: 1000, pendingPercentage: 1.0},
+
+		// cases: 10,000 pending requests in total with only 1 priority and different pending percentage
+		{numPriorities: 1, numRequestsPerPriority: 10000, pendingPercentage: 1.0},
+		{numPriorities: 1, numRequestsPerPriority: 10000, pendingPercentage: 0.5},
+		{numPriorities: 1, numRequestsPerPriority: 10000, pendingPercentage: 0.2},
+		{numPriorities: 1, numRequestsPerPriority: 10000, pendingPercentage: 0.1},
+	}
+	for _, test := range tests {
+		name := fmt.Sprintf("%dPriorities/%dRequests/%fPendingPercentage",
+			test.numPriorities, test.numRequestsPerPriority, test.pendingPercentage)
+		b.Run(name, func(b *testing.B) {
+			benchmarkIteratePendingRequests(b, test.numPriorities, test.numRequestsPerPriority,
+				test.pendingPercentage)
+		})
+	}
+}
+
+func benchmarkIteratePendingRequests(b *testing.B, numPriorities, numRequestsPerPriority int, pendingPercentage float32) {
+	appID := "app-1"
+	appInfo := cache.NewApplicationInfo(appID, "default", "root.unknown", security.UserGroup{}, nil)
+	app := newSchedulingApplication(appInfo)
+	if app == nil || app.ApplicationInfo.ApplicationID != appID {
+		b.Fatalf("app create failed which should not have %v", app)
+	}
+	queue, err := createRootQueue(nil)
+	if err != nil {
+		b.Fatalf("queue create failed: %v", err)
+	}
+	app.queue = queue
+	res := resources.NewResourceFromMap(map[string]resources.Quantity{"first": 1})
+	pendingFlag := int(pendingPercentage * 100)
+	expectedPendingCount := 0
+	askIndex := 0
+	for i := 0; i < numPriorities; i++ {
+		for j := 0; j < numRequestsPerPriority; j++ {
+			repeat := 0
+			if rand.Intn(100) < pendingFlag {
+				repeat = 1
+				expectedPendingCount++
+			}
+			ask := newAllocationAskRepeat("ask-"+strconv.Itoa(askIndex), appID, res, repeat)
+			ask.priority = int32(i)
+			_, err := app.addAllocationAsk(ask)
+			assert.NilError(b, err, "failed to add allocation ask")
+			askIndex++
+		}
+	}
+
+	// check pending count
+	pendingCount := 0
+	reqIt := app.requests.GetPendingRequestIterator()
+	for reqIt.HasNext() {
+		reqIt.Next()
+		pendingCount++
+	}
+	if pendingCount != expectedPendingCount {
+		b.Fatalf("expected pending count: %v, but actually got: %v", expectedPendingCount, pendingCount)
+	}
+
+	// Reset timer for this benchmark
+	startTime := time.Now()
+	b.ResetTimer()
+
+	// execute get all pending for 1000 times
+	testTimes := 100
+	for i := 0; i < testTimes; i++ {
+		reqIt := app.requests.GetPendingRequestIterator()
+		for reqIt.HasNext() {
+			reqIt.Next()
+		}
+	}
+
+	// Stop timer and calculate duration
+	b.StopTimer()
+	duration := time.Since(startTime)
+	b.Logf("Total time to iterate %d pending requests from %d request for %d times in %s, avg time: %s",
+		expectedPendingCount, numPriorities*numRequestsPerPriority, testTimes, duration, duration/100)
 }

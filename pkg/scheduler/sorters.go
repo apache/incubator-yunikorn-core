@@ -22,7 +22,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/apache/incubator-yunikorn-core/pkg/cache"
 	"github.com/apache/incubator-yunikorn-core/pkg/common"
+	"github.com/apache/incubator-yunikorn-core/pkg/common/maps"
 	"github.com/apache/incubator-yunikorn-core/pkg/common/resources"
 	"github.com/apache/incubator-yunikorn-core/pkg/metrics"
 	"github.com/apache/incubator-yunikorn-core/pkg/scheduler/policies"
@@ -157,4 +159,76 @@ func sortAskByPriority(requests []*schedulingAllocationAsk, ascending bool) {
 		}
 		return l.priority > r.priority
 	})
+}
+
+// This interface is used by scheduling queue to sort applications and
+// get sorted pending requests from a specific application.
+type AppRequestSorter interface {
+	// sort applications
+	sortApplications(apps []*SchedulingApplication, queueInfo *cache.QueueInfo)
+	// get pending requests iterator,
+	// there may be different orders or compositions of requests for different implementations.
+	getPendingRequestIterator(app *SchedulingApplication) RequestIterator
+}
+
+type FairAppRequestSorter struct {
+	AppRequestSorter
+}
+
+func (as *FairAppRequestSorter) sortApplications(apps []*SchedulingApplication, queueInfo *cache.QueueInfo) {
+	// Sort by usage
+	sort.SliceStable(apps, func(i, j int) bool {
+		l := apps[i]
+		r := apps[j]
+		return resources.CompUsageRatio(l.getAssumeAllocated(), r.getAssumeAllocated(),
+			queueInfo.GetGuaranteedResource()) < 0
+	})
+}
+
+func (as *FairAppRequestSorter) getPendingRequestIterator(app *SchedulingApplication) RequestIterator {
+	return app.requests.GetPendingRequestIterator()
+}
+
+type FifoAppRequestSorter struct {
+	AppRequestSorter
+}
+
+func (as *FifoAppRequestSorter) sortApplications(apps []*SchedulingApplication, queueInfo *cache.QueueInfo) {
+	// Sort first by priority, then by create time
+	sort.SliceStable(apps, func(i, j int) bool {
+		r := apps[j].requests.GetTopPendingPriorityGroup()
+		l := apps[i].requests.GetTopPendingPriorityGroup()
+		switch {
+		case r == nil && l == nil:
+			return apps[i].ApplicationInfo.SubmissionTime < apps[j].ApplicationInfo.SubmissionTime
+		case r == nil:
+			return true
+		case l == nil:
+			return false
+		}
+
+		if l.GetPriority() == r.GetPriority() {
+			return l.GetCreateTime().Before(r.GetCreateTime())
+		}
+		return l.GetPriority() > r.GetPriority()
+	})
+}
+
+func (as *FifoAppRequestSorter) getPendingRequestIterator(app *SchedulingApplication) RequestIterator {
+	topPendingPriorityGroup := app.requests.GetTopPendingPriorityGroup()
+	if topPendingPriorityGroup != nil {
+		return topPendingPriorityGroup.GetPendingRequestIterator()
+	}
+	return NewSortedRequestIterator([]maps.MapIterator{})
+}
+
+func newAppRequestSorter(sortPolicy policies.SortPolicy) AppRequestSorter {
+	switch sortPolicy {
+	case policies.FairSortPolicy:
+		return &FairAppRequestSorter{}
+	case policies.FifoSortPolicy:
+		return &FifoAppRequestSorter{}
+	default:
+		return &FairAppRequestSorter{}
+	}
 }
