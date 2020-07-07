@@ -368,7 +368,6 @@ func (psc *partitionSchedulingContext) tryAllocate() *schedulingAllocation {
 }
 
 // Try process reservations for the partition
-// Lock free call this all locks are taken when needed in called functions
 func (psc *partitionSchedulingContext) tryReservedAllocate() *schedulingAllocation {
 	psc.Lock()
 	if len(psc.reservedApps) == 0 {

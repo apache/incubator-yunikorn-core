@@ -410,7 +410,7 @@ func (sa *SchedulingApplication) sortRequests(ascending bool) {
 }
 
 // Try a regular allocation of the pending requests
-func (sa *SchedulingApplication) tryAllocate(headRoom *resources.Resource, ctx *partitionSchedulingContext) *schedulingAllocation {
+func (sa *SchedulingApplication) tryAllocate(headRoom, maxHeadRoom *resources.Resource, ctx *partitionSchedulingContext) *schedulingAllocation {
 	sa.Lock()
 	defer sa.Unlock()
 	// make sure the request are sorted
@@ -419,11 +419,39 @@ func (sa *SchedulingApplication) tryAllocate(headRoom *resources.Resource, ctx *
 	for _, request := range sa.sortedRequests {
 		// resource must fit in headroom otherwise skip the request
 		if !resources.FitIn(headRoom, request.AllocatedResource) {
+			key := "InsufficientQueueResources"
+			message := fmt.Sprintf("Application %s does not fit into %s queue", request.ApplicationID, request.QueueName)
+			// if the headroom limit is reached just because there are not enough resources in the cluster
+			// check if we should ask for upscaling (if the queues allow it)
+			if resources.FitIn(maxHeadRoom, request.AllocatedResource) {
+				// tell the shim that we need upscaling
+				// each shim can do it its way, it might not be supported at all
+				if updater := plugins.GetContainerSchedulingStateUpdaterPlugin(); updater != nil {
+					updater.Update(&si.UpdateContainerSchedulingStateRequest{
+						ApplicartionID: request.AskProto.ApplicationID,
+						AllocationKey:  request.AskProto.AllocationKey,
+						State:          si.UpdateContainerSchedulingStateRequest_FAILED,
+						Reason:         "request is waiting for cluster resources become available",
+					})
+				}
+				// update scale up
+				sa.queue.incUpScalingResource(request.AllocatedResource)
+				request.setUpscaleRequested(true)
+				maxHeadRoom.SubFrom(request.AllocatedResource)
+				// update the message
+				key = "InsufficientClusterResources"
+				message += " (scale up triggered)"
+				log.Logger().Debug("Scale up triggered",
+					zap.String("queueName", request.QueueName),
+					zap.String("applicationID", request.AskProto.ApplicationID),
+					zap.String("allocationKey", request.AskProto.AllocationKey),
+					zap.String("resourceRequest", request.AllocatedResource.String()))
+			}
+			// post scheduling events via the scheduler plugin
 			if eventCache := events.GetEventCache(); eventCache != nil {
-				message := fmt.Sprintf("Application %s does not fit into %s queue", request.ApplicationID, request.QueueName)
-				askProto := request.AskProto
-				if event, err := events.CreateRequestEventRecord(askProto.AllocationKey, askProto.ApplicationID, "InsufficientQueueResources", message); err != nil {
+				if event, err := events.CreateRequestEventRecord(request.AskProto.AllocationKey, request.AskProto.ApplicationID, key, message); err != nil {
 					log.Logger().Warn("Event creation failed",
+						zap.String("event key", key),
 						zap.String("event message", message),
 						zap.Error(err))
 				} else {
@@ -642,6 +670,13 @@ func (sa *SchedulingApplication) tryNode(node *SchedulingNode, ask *schedulingAl
 		if err != nil {
 			log.Logger().Debug("ask repeat update failed unexpectedly",
 				zap.Error(err))
+		}
+
+		// cleanup the upscaling requests, this is now allocated so remove and cleanup
+		// note: think about repeats
+		if ask.GetUpscaleRequested() {
+			sa.queue.decUpScalingResource(ask.AllocatedResource)
+			ask.setUpscaleRequested(false)
 		}
 
 		// return allocation

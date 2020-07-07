@@ -616,43 +616,98 @@ func TestSortQueue(t *testing.T) {
 }
 
 func TestHeadroom(t *testing.T) {
+	// create the structure, all queues have no max capacity set
+	// structure is:
+	// root (max: nil)
+	//   - parent (max: nil)
+	//     - leaf1 (max: nil)
+
 	// create the root: nil test
 	root, err := createRootQueue(nil)
 	assert.NilError(t, err, "queue create failed")
-	headRoom := root.getHeadRoom()
-	if headRoom != nil {
-		t.Errorf("empty cluster with root queue should not have headroom: %v", headRoom)
-	}
-
-	var parent *SchedulingQueue
-	// empty parent queue: nil test
+	var parent, leaf1 *SchedulingQueue
 	parent, err = createManagedQueue(root, "parent", true, nil)
 	assert.NilError(t, err, "failed to create parent queue")
-	headRoom = parent.getHeadRoom()
-	if headRoom != nil {
-		t.Errorf("empty cluster with parent queue should not have headroom: %v", headRoom)
-	}
+	leaf1, err = createManagedQueue(parent, "leaf1", false, nil)
+	assert.NilError(t, err, "failed to create leaf1 queue")
 
-	// recreate the structure to pick up changes on max etc
+	headRoom := root.getHeadRoom()
+	assert.Assert(t, resources.IsZero(headRoom), "headRoom of root should zero for empty cluster")
+	headRoom = parent.getHeadRoom()
+	assert.Assert(t, resources.IsZero(headRoom), "headRoom of parent should zero for empty cluster")
+	headRoom = leaf1.getHeadRoom()
+	assert.Assert(t, resources.IsZero(headRoom), "headRoom of leaf should zero for empty cluster")
+}
+
+func TestMaxHeadroom(t *testing.T) {
+	// create the structure, all queues have no max capacity set
 	// structure is:
-	// root			max resource 20,10;	alloc 10,6	head 10,4
-	// - parent		max resource 20,8;	alloc 10,6	head 10,2
-	//   - leaf1	max resource ---;	alloc 5,3	head 15,5 * parent used
-	//   - leaf2	max resource ---;	alloc 5,3	head 15,5 * parent used
+	// root (max: nil)
+	//   - parent (max: nil)
+	//     - leaf1 (max: nil)  (alloc: 5,3)
+	//     - leaf2 (max: nil)  (alloc: 5,3)
+
+	// create the root: nil test
+	root, err := createRootQueue(nil)
+	assert.NilError(t, err, "queue create failed")
+	headRoom := root.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "empty cluster with root queue should not have maxHeadRoom")
+	var parent *SchedulingQueue
+	parent, err = createManagedQueue(root, "parent", true, nil)
+	assert.NilError(t, err, "failed to create parent queue")
+	var leaf1, leaf2 *SchedulingQueue
+	leaf1, err = createManagedQueue(parent, "leaf1", false, nil)
+	assert.NilError(t, err, "failed to create leaf1 queue")
+	leaf2, err = createManagedQueue(parent, "leaf2", false, nil)
+	assert.NilError(t, err, "failed to create leaf2 queue")
+
+	// allocating and allocated
+	var res *resources.Resource
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "1", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf1.incAllocatingResource(res)
+	leaf2.incAllocatingResource(res)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "4", "second": "2"})
+	assert.NilError(t, err, "failed to create resource")
+	err = leaf1.QueueInfo.IncAllocatedResource(res, true)
+	assert.NilError(t, err, "failed to set allocated resource on leaf1")
+	err = leaf2.QueueInfo.IncAllocatedResource(res, true)
+	assert.NilError(t, err, "failed to set allocated resource on leaf2")
+
+	headRoom = root.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "maxHeadRoom of root should always be nil")
+	headRoom = parent.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "maxHeadRoom of parent should be nil because no max set for any queue")
+	headRoom = leaf1.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "maxHeadRoom of leaf1 should be nil because no max set for any queue")
+	headRoom = leaf2.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "maxHeadRoom of leaf2 should be nil because no max set for any queue")
+}
+
+func TestHeadroomParent(t *testing.T) {
+	// create the structure, set max capacity in root, parent and one leaf queue
+	// root max is larger than all, no impact (like root max nil)
+	// structure is:
+	// root	max (20,10)
+	// - parent	max (20,8)
+	//   - leaf1 max (nil)    alloc (5,3)
+	//   - leaf2 max (10,8)   alloc (5,3)
 	// set the max on the root
 	resMap := map[string]string{"first": "20", "second": "10"}
-	root, err = createRootQueue(resMap)
+	root, err := createRootQueue(resMap)
 	assert.NilError(t, err, "failed to create root queue with limit")
 	// set the max on the parent
 	resMap = map[string]string{"first": "20", "second": "8"}
+	var parent *SchedulingQueue
 	parent, err = createManagedQueue(root, "parent", true, resMap)
 	assert.NilError(t, err, "failed to create parent queue")
 	// leaf1 queue no limit
 	var leaf1, leaf2 *SchedulingQueue
 	leaf1, err = createManagedQueue(parent, "leaf1", false, nil)
 	assert.NilError(t, err, "failed to create leaf1 queue")
-	// leaf2 queue no limit
-	leaf2, err = createManagedQueue(parent, "leaf2", false, nil)
+	// leaf2 queue
+	resMap = map[string]string{"first": "10", "second": "8"}
+	leaf2, err = createManagedQueue(parent, "leaf2", false, resMap)
 	assert.NilError(t, err, "failed to create leaf2 queue")
 
 	// allocating and allocated
@@ -670,31 +725,321 @@ func TestHeadroom(t *testing.T) {
 
 	// headRoom root should be this (20-10, 10-6)
 	res, err = resources.NewResourceFromConf(map[string]string{"first": "10", "second": "4"})
-	headRoom = root.getHeadRoom()
-	if err != nil || !resources.Equals(res, headRoom) {
-		t.Errorf("root queue head room not as expected %v, got: %v (err %v)", res, headRoom, err)
-	}
+	assert.NilError(t, err, "failed to create resource")
+	headRoom := root.getHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "parent queue head room expected: %s, got: %s", res, headRoom)
 
 	// headRoom parent should be this (20-10, 8-6)
 	res, err = resources.NewResourceFromConf(map[string]string{"first": "10", "second": "2"})
 	headRoom = parent.getHeadRoom()
-	if err != nil || !resources.Equals(res, headRoom) {
-		t.Errorf("parent queue head room not as expected %v, got: %v (err %v)", res, headRoom, err)
-	}
-
-	// headRoom leaf1 will be smaller of this
-	// leaf1 (20-5, 8-3) & parent (20-10, 8-6)
-	// parent queue has lower head room and leaf1 gets limited to parent headroom
-	res, err = resources.NewResourceFromConf(map[string]string{"first": "10", "second": "2"})
-	assert.NilError(t, err, "failed to create resource")
+	assert.Assert(t, resources.Equals(res, headRoom), "parent queue head room expected: %s, got: %s", res, headRoom)
+	// leaf1 has no max set so same as parent
 	headRoom = leaf1.getHeadRoom()
-	if !resources.Equals(res, headRoom) {
-		t.Errorf("leaf1 queue head room not as expected %v, got: %v (err %v)", res, headRoom, err)
-	}
+	assert.Assert(t, resources.Equals(res, headRoom), "leaf1 queue head room expected: %s, got: %s", res, headRoom)
+
+	// headRoom leaf2 will be smaller of leaf2 (10-5, 8-3) & parent (10,2)
+	// parent queue has partial lower head room and leaf1 gets limited to parent headroom
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "2"})
+	assert.NilError(t, err, "failed to create resource")
 	headRoom = leaf2.getHeadRoom()
-	if !resources.Equals(res, headRoom) {
-		t.Errorf("leaf1 queue head room not as expected %v, got: %v (err %v)", res, headRoom, err)
-	}
+	assert.Assert(t, resources.Equals(res, headRoom), "leaf2 queue head room expected: %s, got: %s", res, headRoom)
+}
+
+func TestHeadroomRootMax(t *testing.T) {
+	// create the structure, set max capacity in root, parent and one leaf queue
+	// root max partially overrules parent and also indirectly leaf
+	// structure is:
+	// root (max: 17,10)
+	//   - parent (max: 20,8)
+	//     - leaf1 (max: nil)   (alloc: 6,4)
+	//     - leaf2 (max: 10,8)  (alloc: 5,3)
+	resMap := map[string]string{"first": "17", "second": "10"}
+	root, err := createRootQueue(resMap)
+	assert.NilError(t, err, "failed to create root queue with limit")
+	var parent *SchedulingQueue
+	resMap = map[string]string{"first": "20", "second": "8"}
+	parent, err = createManagedQueue(root, "parent", true, resMap)
+	assert.NilError(t, err, "failed to create parent queue")
+	var leaf1, leaf2 *SchedulingQueue
+	leaf1, err = createManagedQueue(parent, "leaf1", false, nil)
+	assert.NilError(t, err, "failed to create leaf1 queue")
+	resMap = map[string]string{"first": "10", "second": "8"}
+	leaf2, err = createManagedQueue(parent, "leaf2", false, resMap)
+	assert.NilError(t, err, "failed to create leaf2 queue")
+
+	// allocating and allocated
+	var res *resources.Resource
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "6", "second": "4"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf1.incAllocatingResource(res)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "3"})
+	assert.NilError(t, err, "failed to create resource")
+	err = leaf2.QueueInfo.IncAllocatedResource(res, true)
+	assert.NilError(t, err, "failed to set allocated resource on leaf2")
+
+	// root headroom should be set
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "6", "second": "3"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom := root.getHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "root queue headRoom expected: %s, got: %s", res, headRoom)
+
+	// smaller of root and parent
+	// parent headroom = parentMax - leaf1 - leaf2 = (9, 1)
+	// parent gets partially limited to root (6,3)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "6", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = parent.getHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "multi test: parent queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// leaf1 headroom same as parent
+	headRoom = leaf1.getHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "multi test: leaf1 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+	// leaf2 headroom smaller of max for queue and parent headroom
+	// leaf headroom = leafMax - allocated = (5, 5)
+	// leaf gets partially limited by parent (6,1)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = leaf2.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "multi test: leaf2 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+}
+
+func TestMaxHeadroomParent(t *testing.T) {
+	// create the structure, set max capacity in root level, verify that will be ignored
+	// structure is:
+	// root (max: 1, 1)
+	//   - parent (max: 20,8)
+	//     - leaf1 (max: nil)  (alloc: 5,3)
+	//     - leaf2 (max: nil)  (alloc: 6,4)
+	resMap := map[string]string{"first": "1", "second": "1"}
+	root, err := createRootQueue(resMap)
+	assert.NilError(t, err, "failed to create root queue with limit")
+	resMap = map[string]string{"first": "20", "second": "8"}
+	var parent *SchedulingQueue
+	parent, err = createManagedQueue(root, "parent", true, resMap)
+	assert.NilError(t, err, "failed to create parent queue")
+	var leaf1, leaf2 *SchedulingQueue
+	leaf1, err = createManagedQueue(parent, "leaf1", false, nil)
+	assert.NilError(t, err, "failed to create leaf1 queue")
+	leaf2, err = createManagedQueue(parent, "leaf2", false, nil)
+	assert.NilError(t, err, "failed to create leaf2 queue")
+
+	// allocating and allocated
+	var res *resources.Resource
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "1", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf1.incAllocatingResource(res)
+	leaf2.incAllocatingResource(res)
+	leaf2.incAllocatingResource(res)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "4", "second": "2"})
+	assert.NilError(t, err, "failed to create resource")
+	err = leaf1.QueueInfo.IncAllocatedResource(res, true)
+	assert.NilError(t, err, "failed to set allocated resource on leaf1")
+	err = leaf2.QueueInfo.IncAllocatedResource(res, true)
+	assert.NilError(t, err, "failed to set allocated resource on leaf2")
+
+	// root max headroom should be nil
+	headRoom := root.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "maxHeadRoom of root should always be nil")
+
+	// parent max headroom = parentMax - leaf1 - leaf2
+	// parent max headroom = (20 - 5 - 6, 8 - 3 - 4) = (9, 1)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "9", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = parent.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "root test: parent queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// leaf max headroom = parent max head room (no max set on leafs)
+	headRoom = leaf1.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "root test: leaf1 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+	headRoom = leaf2.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "root test: leaf2 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+}
+
+func TestMaxHeadroomLeaf(t *testing.T) {
+	// create the structure, set max capacity in parent and a leaf queue
+	// structure is:
+	// root (max: 1,1)
+	//   - parent (max: 20,8)
+	//     - leaf1 (max: nil)   (alloc: 6,4)
+	//     - leaf2 (max: 10,8)  (alloc: 5,3)
+	resMap := map[string]string{"first": "1", "second": "1"}
+	root, err := createRootQueue(resMap)
+	assert.NilError(t, err, "failed to create root queue with limit")
+	var parent *SchedulingQueue
+	resMap = map[string]string{"first": "20", "second": "8"}
+	parent, err = createManagedQueue(root, "parent", true, resMap)
+	assert.NilError(t, err, "failed to create parent queue")
+	var leaf1, leaf2 *SchedulingQueue
+	leaf1, err = createManagedQueue(parent, "leaf1", false, nil)
+	assert.NilError(t, err, "failed to create leaf1 queue")
+	resMap = map[string]string{"first": "10", "second": "8"}
+	leaf2, err = createManagedQueue(parent, "leaf2", false, resMap)
+	assert.NilError(t, err, "failed to create leaf2 queue")
+
+	// allocating and allocated
+	var res *resources.Resource
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "6", "second": "4"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf1.incAllocatingResource(res)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "3"})
+	assert.NilError(t, err, "failed to create resource")
+	err = leaf2.QueueInfo.IncAllocatedResource(res, true)
+	assert.NilError(t, err, "failed to set allocated resource on leaf2")
+
+	// root max headroom should be nil
+	headRoom := root.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "maxHeadRoom of root should always be nil")
+
+	// parent max headroom = parentMax - leaf1Allocated - leaf2Allocated
+	// parent max headroom = (20 - 5 - 6, 8 - 3 - 4) = (9, 1)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "9", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = parent.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "leaf test: parent queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// leaf1 max headroom same as parent
+	headRoom = leaf1.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "leaf test: leaf1 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// leaf2 with max set
+	// leaf2 max headroom = MIN(parentHeadRoom, leaf1Max - leaf1Allocated)
+	// leaf2 max headroom = MIN((9,1), (10-5, 8-3)) = MIN((9,1), (5,5)) = (5, 1)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = leaf2.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "leaf test: leaf2 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+}
+
+func TestMaxHeadroomUpscale(t *testing.T) {
+	// create the structure, set max capacity in parent and a leaf queue
+	// upscale is set on the leaf queue without a max
+	// structure is:
+	// root (max: 1,1)
+	//   - parent (max: 20,10)
+	//     - leaf1 (max: nil)  (alloc: 6,4)  (upscale: 4,2)
+	//     - leaf2 (max: 8,3)  (alloc: 5,3)
+	resMap := map[string]string{"first": "1", "second": "1"}
+	root, err := createRootQueue(resMap)
+	assert.NilError(t, err, "failed to create root queue with limit")
+	var parent *SchedulingQueue
+	resMap = map[string]string{"first": "20", "second": "10"}
+	parent, err = createManagedQueue(root, "parent", true, resMap)
+	assert.NilError(t, err, "failed to create parent queue")
+	var leaf1, leaf2 *SchedulingQueue
+	leaf1, err = createManagedQueue(parent, "leaf1", false, nil)
+	assert.NilError(t, err, "failed to create leaf1 queue")
+	resMap = map[string]string{"first": "8", "second": "3"}
+	leaf2, err = createManagedQueue(parent, "leaf2", false, resMap)
+	assert.NilError(t, err, "failed to create leaf2 queue")
+
+	// allocating
+	var res *resources.Resource
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "6", "second": "4"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf1.incAllocatingResource(res)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "3"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf2.incAllocatingResource(res)
+	// upscaling
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "4", "second": "2"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf1.incUpScalingResource(res)
+
+	// root max headroom should be nil
+	headRoom := root.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "maxHeadRoom of root should always be nil")
+
+	// parent max headroom = parentMax - leaf1 - leaf2 - upscaling
+	// parent max headroom = (20 - 5 - 6 - 4, 10 - 3 - 4 - 2) = (5, 1)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = parent.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "upscale test: parent queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// leaf1 max headroom no max set: same as parent
+	headRoom = leaf1.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "upscale test: leaf1 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// leaf2 with max set (no upscale)
+	// leaf2 max headroom = MIN(parentMaxHeadRoom, leaf1Max - leaf1Allocated)
+	// leaf2 max headroom = MIN((5,1), (8-5, 3-3)) = MIN((5,1), (3,0)) = (3,0)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "3", "second": "0"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = leaf2.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "upscale test: leaf2 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+}
+
+func TestMaxHeadroomUpscaleWithMax(t *testing.T) {
+	// create the structure, set max capacity in parent and a leaf queue
+	// upscale is set on the leaf queue with max set
+	// structure is:
+	// root (max: 20,10)
+	//   - parent (max: 20,10)
+	//     - leaf1 (max: nil)   (alloc: 5,3)
+	//     - leaf2 (max: 12,6)  (alloc: 6,4)  (upscale: 4,2)
+	resMap := map[string]string{"first": "20", "second": "10"}
+	root, err := createRootQueue(resMap)
+	assert.NilError(t, err, "failed to create root queue with limit")
+	var parent *SchedulingQueue
+	resMap = map[string]string{"first": "20", "second": "10"}
+	parent, err = createManagedQueue(root, "parent", true, resMap)
+	assert.NilError(t, err, "failed to create parent queue")
+	var leaf1, leaf2 *SchedulingQueue
+	leaf1, err = createManagedQueue(parent, "leaf1", false, nil)
+	assert.NilError(t, err, "failed to create leaf1 queue")
+	resMap = map[string]string{"first": "12", "second": "6"}
+	leaf2, err = createManagedQueue(parent, "leaf2", false, resMap)
+	assert.NilError(t, err, "failed to create leaf2 queue")
+
+	// allocating
+	var res *resources.Resource
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "3"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf1.incAllocatingResource(res)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "6", "second": "4"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf2.incAllocatingResource(res)
+	// upscaling
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "4", "second": "2"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf2.incUpScalingResource(res)
+
+	// root max headroom should be nil
+	headRoom := root.getMaxHeadRoom()
+	assert.Assert(t, headRoom == nil, "maxHeadRoom of root should always be nil")
+
+	// parent max headroom = parentMax - leaf1 - leaf2 - upscaling
+	// parent max headroom = (20 - 5 - 6 - 4, 10 - 3 - 4 - 2) = (5,1)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "1"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = parent.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "upscale test: parent queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// leaf1 max headroom no max set: same as parent
+	headRoom = leaf1.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "upscale test: leaf1 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// leaf2 with max set and upscale
+	// leaf2 max headroom = MIN(parentMaxHeadRoom, leaf2max - leaf2 - leaf2upscale)
+	// leaf2 max headroom = MIN((5,1), (12 - 6 - 4, 6 - 4 - 2)) = MIN((5,1), (2,0)) = (2,0)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "2", "second": "0"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = leaf2.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "upscale test: leaf2 queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+
+	// increase allocated on the first queue to use all resources
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "9", "second": "3"})
+	assert.NilError(t, err, "failed to create resource")
+	leaf1.incAllocatingResource(res)
+
+	// parent should now have a negative maxHeadRoom (all upscale resources)
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "-4", "second": "-2"})
+	assert.NilError(t, err, "failed to create resource")
+	headRoom = parent.getMaxHeadRoom()
+	assert.Assert(t, resources.Equals(res, headRoom), "upscale test: allocated parent queue maxHeadRoom expected: %s, got: %s", res, headRoom)
+	// parent should now have a zero headRoom, root max is exactly same as allocated
+	headRoom = parent.getHeadRoom()
+	assert.Assert(t, resources.IsZero(headRoom), "upscale test: parent queue headRoom expected zero resource got: %s", headRoom)
 }
 
 func TestGetMaxUsage(t *testing.T) {
@@ -826,4 +1171,47 @@ func TestIsEmpty(t *testing.T) {
 	app := newSchedulingApplication(&cache.ApplicationInfo{ApplicationID: "app-1"})
 	leaf.addSchedulingApplication(app)
 	assert.Equal(t, leaf.isEmpty(), false, "queue with registered app should not be empty")
+}
+
+func TestUpScalingCalc(t *testing.T) {
+	// create the root
+	root, err := createRootQueue(nil)
+	assert.NilError(t, err, "queue create failed")
+	var parent, leaf *SchedulingQueue
+	parent, err = createManagedQueue(root, "parent", true, nil)
+	assert.NilError(t, err, "failed to create parent queue")
+	leaf, err = createManagedQueue(parent, "leaf", false, nil)
+	assert.NilError(t, err, "failed to create leaf queue")
+
+	var res *resources.Resource
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "5", "second": "7"})
+	assert.NilError(t, err, "failed to create basic resource")
+	leaf.incUpScalingResource(res)
+	assert.Assert(t, resources.IsZero(root.upScaling), "root upscaling should be zero, got: %s", root.upScaling)
+	assert.Assert(t, resources.Equals(res, parent.upScaling), "parent queue upscaling increment expected: %s, got: %s", res, parent.upScaling)
+	assert.Assert(t, resources.Equals(res, leaf.upScaling), "leaf queue upscaling increment expected: %s, got: %s", res, leaf.upScaling)
+
+	res, err = resources.NewResourceFromConf(map[string]string{"first": "3", "second": "4"})
+	assert.NilError(t, err, "failed to create basic resource")
+	leaf.decUpScalingResource(res)
+
+	var left *resources.Resource
+	left, err = resources.NewResourceFromConf(map[string]string{"first": "2", "second": "3"})
+	assert.NilError(t, err, "failed to create basic resource")
+	assert.Assert(t, resources.IsZero(root.upScaling), "root upscaling should be zero, got: %s", root.upScaling)
+	assert.Assert(t, resources.Equals(left, parent.upScaling), "parent queue upscaling decrement expected: %s, got: %s", left, parent.upScaling)
+	assert.Assert(t, resources.Equals(left, leaf.upScaling), "leaf queue upscaling decrement expected: %s, got: %s", left, leaf.upScaling)
+
+	var parentAdd *resources.Resource
+	parentAdd, err = resources.NewResourceFromConf(map[string]string{"first": "2"})
+	parent.incUpScalingResource(parentAdd)
+	assert.NilError(t, err, "failed to create basic resource")
+	// Not allowed to go negative for any resource type
+	// leaf should come back as 0 real (-1,-1), parent as (1,0) real (1,-1)
+	left, err = resources.NewResourceFromConf(map[string]string{"first": "1"})
+	assert.NilError(t, err, "failed to create basic resource")
+	leaf.decUpScalingResource(res)
+	assert.Assert(t, resources.IsZero(root.upScaling), "root upscaling should be zero, got: %s", root.upScaling)
+	assert.Assert(t, resources.Equals(left, parent.upScaling), "parent queue upscaling decrement expected: %s, got: %s", left, parent.upScaling)
+	assert.Assert(t, resources.IsZero(leaf.upScaling), "leaf queue upscaling decrement expected zero, got: %s", leaf.upScaling)
 }

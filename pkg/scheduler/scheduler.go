@@ -595,10 +595,6 @@ func (s *Scheduler) MultiStepSchedule(nAlloc int) {
 func (s *Scheduler) schedule() {
 	// schedule each partition defined in the cluster
 	for _, psc := range s.clusterSchedulingContext.getPartitionMapClone() {
-		// if there are no resources in the partition just skip
-		if psc.root.getMaxResource() == nil {
-			continue
-		}
 		// try reservations first: gets back a node ID if the allocation occurs on a node
 		// that was not reserved by the app/ask
 		alloc := psc.tryReservedAllocate()
