@@ -42,6 +42,7 @@ type SchedulingNode struct {
 	cachedAvailable             *resources.Resource     // calculated available resources
 	cachedAvailableUpdateNeeded bool                    // is the calculated available resource up to date?
 	reservations                map[string]*reservation // a map of reservations
+	subjectManager              *SubjectManager
 
 	sync.RWMutex
 }
@@ -62,6 +63,10 @@ func newSchedulingNode(info *cache.NodeInfo) *SchedulingNode {
 	}
 }
 
+func (sn *SchedulingNode) setSubjectManager(subjectManager *SubjectManager) {
+	sn.subjectManager = subjectManager
+}
+
 // Return an array of all reservation keys for the node.
 // This will return an empty array if there are no reservations.
 // Visible for tests
@@ -80,7 +85,7 @@ func (sn *SchedulingNode) updateNodeInfo(newNodeInfo *cache.NodeInfo) {
 	defer sn.Unlock()
 
 	sn.nodeInfo = newNodeInfo
-	sn.cachedAvailableUpdateNeeded = true
+	sn.nodeResourceUpdated()
 }
 
 // Get the allocated resource on this node.
@@ -121,8 +126,8 @@ func (sn *SchedulingNode) incAllocatingResource(delta *resources.Resource) {
 	sn.Lock()
 	defer sn.Unlock()
 
-	sn.cachedAvailableUpdateNeeded = true
 	sn.allocating.AddTo(delta)
+	sn.nodeResourceUpdated()
 }
 
 // Handle the allocation processing on the scheduler when the cache node is updated.
@@ -130,7 +135,6 @@ func (sn *SchedulingNode) decAllocatingResource(delta *resources.Resource) {
 	sn.Lock()
 	defer sn.Unlock()
 
-	sn.cachedAvailableUpdateNeeded = true
 	var err error
 	sn.allocating, err = resources.SubErrorNegative(sn.allocating, delta)
 	if err != nil {
@@ -138,6 +142,7 @@ func (sn *SchedulingNode) decAllocatingResource(delta *resources.Resource) {
 			zap.String("nodeID", sn.NodeID),
 			zap.Error(err))
 	}
+	sn.nodeResourceUpdated()
 }
 
 // Get the number of resource tagged for preemption on this node
@@ -186,8 +191,8 @@ func (sn *SchedulingNode) allocateResource(res *resources.Resource, preemptionPh
 		log.Logger().Debug("allocations in progress updated",
 			zap.String("nodeID", sn.NodeID),
 			zap.Any("total unconfirmed", newAllocating))
-		sn.cachedAvailableUpdateNeeded = true
 		sn.allocating = newAllocating
+		sn.nodeResourceUpdated()
 		return true
 	}
 	// allocation failed resource did not fit
@@ -378,4 +383,13 @@ func (sn *SchedulingNode) unReserveApps() ([]string, []int) {
 		askRelease = append(askRelease, num)
 	}
 	return appReserve, askRelease
+}
+
+func (sn *SchedulingNode) nodeResourceUpdated() {
+	sn.cachedAvailableUpdateNeeded = true
+	if sn.subjectManager != nil {
+		go func() {
+			sn.subjectManager.NotifyEvent(NodeSubject, &NodeSubjectResourceUpdateEvent{node: sn})
+		}()
+	}
 }

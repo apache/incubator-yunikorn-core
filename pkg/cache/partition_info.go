@@ -57,6 +57,8 @@ type PartitionInfo struct {
 	clusterInfo            *ClusterInfo                // link back to the cluster info
 	totalPartitionResource *resources.Resource         // Total node resources
 	nodeSortingPolicy      *common.NodeSortingPolicy   // Global Node Sorting Policies
+	nodeEvaluator          *configs.NodeEvaluatorConfig
+	nodeSortingAlgorithm   *configs.NodeSortingAlgorithmConfig
 
 	sync.RWMutex
 }
@@ -118,6 +120,8 @@ func newPartitionInfo(partition configs.PartitionConfig, rmID string, info *Clus
 		log.Logger().Info("NodeSorting policy not set using 'fair' as default")
 		p.nodeSortingPolicy = common.NewNodeSortingPolicy("fair")
 	}
+	p.nodeSortingAlgorithm = &partition.NodeSortAlgorithm
+	p.nodeEvaluator = &partition.NodeEvaluator
 
 	return p, nil
 }
@@ -933,4 +937,30 @@ func (pi *PartitionInfo) CalculateNodesResourceUsage() map[string][]int {
 		}
 	}
 	return mapResult
+}
+
+func (pi *PartitionInfo) GetNodeEvaluator() *configs.NodeEvaluatorConfig {
+	pi.RLock()
+	defer pi.RUnlock()
+	return pi.nodeEvaluator
+}
+
+// Visible for tests
+func (pi *PartitionInfo) SetNodeEvaluator(nodeEvaluator *configs.NodeEvaluatorConfig) {
+	pi.RLock()
+	defer pi.RUnlock()
+	pi.nodeEvaluator = nodeEvaluator
+}
+
+func (pi *PartitionInfo) GetNodeSortingAlgorithm() *configs.NodeSortingAlgorithmConfig {
+	pi.RLock()
+	defer pi.RUnlock()
+	return pi.nodeSortingAlgorithm
+}
+
+// Visible for tests
+func (pi *PartitionInfo) SetNodeSortingAlgorithm(nodeSortingAlgorithm *configs.NodeSortingAlgorithmConfig) {
+	pi.RLock()
+	defer pi.RUnlock()
+	pi.nodeSortingAlgorithm = nodeSortingAlgorithm
 }
