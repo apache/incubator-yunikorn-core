@@ -97,7 +97,7 @@ func TestManagedSubQueues(t *testing.T) {
 		t.Error("leaf queue should not have been removed")
 	}
 	// remove the app (dirty way)
-	delete(leaf.applications, appID1)
+	leaf.applications.RemoveApplication(appID1)
 	if !leaf.RemoveQueue() && len(parent.children) != 0 {
 		t.Error("leaf queue should have been removed and parent updated and was not")
 	}
@@ -147,7 +147,7 @@ func TestDynamicSubQueues(t *testing.T) {
 		t.Error("leaf queue should not have been removed")
 	}
 	// remove the app (dirty way)
-	delete(leaf.applications, appID1)
+	leaf.applications.RemoveApplication(appID1)
 	if !leaf.RemoveQueue() && len(parent.children) != 0 {
 		t.Error("leaf queue should have been removed and parent updated and was not")
 	}
@@ -242,12 +242,12 @@ func TestAddApplication(t *testing.T) {
 	app.pending = pending
 	// adding the app must not update pending resources
 	leaf.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 1, "Application was not added to the queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 1, "Application was not added to the queue as expected")
 	assert.Assert(t, resources.IsZero(leaf.pending), "leaf queue pending resource not zero")
 
 	// add the same app again should not increase the number of apps
 	leaf.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 1, "Application was not replaced in the queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 1, "Application was not replaced in the queue as expected")
 }
 
 func TestAddApplicationWithTag(t *testing.T) {
@@ -264,13 +264,13 @@ func TestAddApplicationWithTag(t *testing.T) {
 
 	// adding the app to managed/Dynamic queue must not update queue settings, works
 	leaf.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 1, "Application was not added to the managed queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 1, "Application was not added to the managed queue as expected")
 	if leaf.GetMaxResource() != nil {
 		t.Errorf("Max resources should not be set on managed queue got: %s", leaf.GetMaxResource().String())
 	}
 	app = newApplication("app-2", "default", "root.leaf-un")
 	leafUn.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 1, "Application was not added to the Dynamic queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 1, "Application was not added to the Dynamic queue as expected")
 	if leafUn.GetMaxResource() != nil {
 		t.Errorf("Max resources should not be set on Dynamic queue got: %s", leafUn.GetMaxResource().String())
 	}
@@ -284,13 +284,13 @@ func TestAddApplicationWithTag(t *testing.T) {
 	// add apps again now with the tag set
 	app = newApplicationWithTags("app-3", "default", "root.leaf-man", tags)
 	leaf.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 2, "Application was not added to the managed queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 2, "Application was not added to the managed queue as expected")
 	if leaf.GetMaxResource() != nil {
 		t.Errorf("Max resources should not be set on managed queue got: %s", leaf.GetMaxResource().String())
 	}
 	app = newApplicationWithTags("app-4", "default", "root.leaf-un", tags)
 	leafUn.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 2, "Application was not added to the Dynamic queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 2, "Application was not added to the Dynamic queue as expected")
 	if !resources.Equals(leafUn.GetMaxResource(), maxRes) {
 		t.Errorf("Max resources not set as expected: %s got: %v", maxRes.String(), leafUn.GetMaxResource())
 	}
@@ -299,7 +299,7 @@ func TestAddApplicationWithTag(t *testing.T) {
 	tags[appTagNamespaceResourceQuota] = "{\"resources\":{\"first\":{\"value\":0}}}"
 	app = newApplicationWithTags("app-4", "default", "root.leaf-un", tags)
 	leafUn.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 2, "Application was not added to the Dynamic queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 2, "Application was not added to the Dynamic queue as expected")
 	if !resources.Equals(leafUn.GetMaxResource(), maxRes) {
 		t.Errorf("Max resources not set as expected: %s got: %v", maxRes.String(), leafUn.GetMaxResource())
 	}
@@ -315,41 +315,41 @@ func TestRemoveApplication(t *testing.T) {
 	// try removing a non existing app
 	nonExist := newApplication("test", "", "")
 	leaf.RemoveApplication(nonExist)
-	assert.Equal(t, len(leaf.applications), 0, "Removal of non existing app updated unexpected")
+	assert.Equal(t, leaf.applications.Size(), 0, "Removal of non existing app updated unexpected")
 
 	// add an app and remove it
 	app := newApplication("exists", "default", "root.leaf-man")
 	leaf.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 1, "Application was not added to the queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 1, "Application was not added to the queue as expected")
 	assert.Assert(t, resources.IsZero(leaf.pending), "leaf queue pending resource not zero")
 	leaf.RemoveApplication(nonExist)
-	assert.Equal(t, len(leaf.applications), 1, "Non existing application was removed from the queue")
+	assert.Equal(t, leaf.applications.Size(), 1, "Non existing application was removed from the queue")
 	leaf.RemoveApplication(app)
-	assert.Equal(t, len(leaf.applications), 0, "Application was not removed from the queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 0, "Application was not removed from the queue as expected")
 
 	// try the same again now with pending resources set
 	res := resources.NewResourceFromMap(map[string]resources.Quantity{"first": 10})
 	app.pending.AddTo(res)
 	leaf.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 1, "Application was not added to the queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 1, "Application was not added to the queue as expected")
 	assert.Assert(t, resources.IsZero(leaf.pending), "leaf queue pending resource not zero")
 	// update pending resources for the hierarchy
 	leaf.incPendingResource(res)
 	leaf.RemoveApplication(app)
-	assert.Equal(t, len(leaf.applications), 0, "Application was not removed from the queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 0, "Application was not removed from the queue as expected")
 	assert.Assert(t, resources.IsZero(leaf.pending), "leaf queue pending resource not updated correctly")
 	assert.Assert(t, resources.IsZero(root.pending), "root queue pending resource not updated correctly")
 
 	app.allocatedResource.AddTo(res)
 	app.pending = resources.NewResource()
 	leaf.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 1, "Application was not added to the queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 1, "Application was not added to the queue as expected")
 	assert.Assert(t, resources.IsZero(leaf.allocatedResource), "leaf queue pending resource not zero")
 	// update allocated resources for the hierarchy
 	err = leaf.IncAllocatedResource(res, false)
 	assert.NilError(t, err, "increment of allocated resource on queue should not have failed")
 	leaf.RemoveApplication(app)
-	assert.Equal(t, len(leaf.applications), 0, "Application was not removed from the queue as expected")
+	assert.Equal(t, leaf.applications.Size(), 0, "Application was not removed from the queue as expected")
 	assert.Assert(t, resources.IsZero(leaf.allocatedResource), "leaf queue allocated resource not updated correctly")
 	assert.Assert(t, resources.IsZero(root.allocatedResource), "root queue allocated resource not updated correctly")
 }
@@ -420,7 +420,7 @@ func TestPreemptingCalc(t *testing.T) {
 }
 
 // This test must not test the sorter that is underlying.
-// It tests the queue specific parts of the code only.
+// It tests the DefaultApplications specific parts of the code only.
 func TestSortApplications(t *testing.T) {
 	// create the root
 	root, err := createRootQueue(nil)
@@ -429,38 +429,40 @@ func TestSortApplications(t *testing.T) {
 	// empty parent queue
 	parent, err = createManagedQueue(root, "parent", true, nil)
 	assert.NilError(t, err, "failed to create parent queue: %v")
-	if apps := parent.sortApplications(); apps != nil {
-		t.Errorf("parent queue should not return sorted apps: %v", apps)
-	}
+	appIt := parent.GetApplications().SortForAllocation()
+	assert.Assert(t, !appIt.HasNext() && appIt.Size() == 0, "parent queue should return no app")
 
 	// empty leaf queue
 	leaf, err = createManagedQueue(parent, "leaf", false, nil)
 	assert.NilError(t, err, "failed to create leaf queue")
-	if len(leaf.sortApplications()) != 0 {
-		t.Errorf("empty queue should return no app from sort: %v", leaf)
-	}
+	appIt = leaf.GetApplications().SortForAllocation()
+	assert.Assert(t, !appIt.HasNext() && appIt.Size() == 0, "empty queue should return no app")
+
 	// new app does not have pending res, does not get returned
 	app := newApplication(appID1, "default", leaf.QueuePath)
 	app.queue = leaf
 	leaf.AddApplication(app)
-	if len(leaf.sortApplications()) != 0 {
-		t.Errorf("app without ask should not be in sorted apps: %v", app)
-	}
+	appIt = leaf.GetApplications().SortForAllocation()
+	assert.Assert(t, !appIt.HasNext() && appIt.Size() == 0, "app without ask should not be in sorted apps")
+
 	var res *resources.Resource
 	res, err = resources.NewResourceFromConf(map[string]string{"first": "1"})
 	assert.NilError(t, err, "failed to create basic resource")
 	// add an ask app must be returned
 	err = app.AddAllocationAsk(newAllocationAsk("alloc-1", appID1, res))
 	assert.NilError(t, err, "failed to add allocation ask")
-	sortedApp := leaf.sortApplications()
-	if len(sortedApp) != 1 || sortedApp[0].ApplicationID != appID1 {
-		t.Errorf("sorted application is missing expected app: %v", sortedApp)
-	}
+	appIt = leaf.GetApplications().SortForAllocation()
+	assert.Assert(t, appIt.HasNext() && appIt.Size() == 1, "sorted application is missing expected app")
+	checkApp := appIt.Next()
+	assert.Assert(t, checkApp.GetApplicationID() == appID1, "sorted application is missing expected app")
+
 	// set 0 repeat
 	_, err = app.updateAskRepeat("alloc-1", -1)
-	if err != nil || len(leaf.sortApplications()) != 0 {
-		t.Errorf("app with ask but 0 pending resources should not be in sorted apps: %v (err = %v)", app, err)
+	if err != nil {
+		t.Errorf("failed to update ask repeat: %v (err = %v)", app, err)
 	}
+	appIt = leaf.GetApplications().SortForAllocation()
+	assert.Assert(t, !appIt.HasNext() && appIt.Size() == 0, "app with ask but 0 pending resources should not be in sorted apps")
 }
 
 // This test must not test the sorter that is underlying.
@@ -799,7 +801,7 @@ func TestGetApp(t *testing.T) {
 	// add app and check proper returns
 	app := newApplication(appID1, "default", leaf.QueuePath)
 	leaf.AddApplication(app)
-	assert.Equal(t, len(leaf.applications), 1, "queue should have one app registered")
+	assert.Equal(t, leaf.applications.Size(), 1, "queue should have one app registered")
 	if leaf.getApplication(appID1) == nil {
 		t.Errorf("registered app not found using appID")
 	}

@@ -117,3 +117,11 @@ func (aa *AllocationAsk) setPriority(prio int32) {
 	defer aa.Unlock()
 	aa.priority = prio
 }
+
+func (aa *AllocationAsk) GetAllocationKey() string {
+	return aa.AllocationKey
+}
+
+func (aa *AllocationAsk) GetPriority() int32 {
+	return aa.priority
+}
