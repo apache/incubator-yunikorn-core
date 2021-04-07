@@ -34,6 +34,7 @@ import (
 	"github.com/apache/incubator-yunikorn-core/pkg/plugins"
 	"github.com/apache/incubator-yunikorn-core/pkg/rmproxy/rmevent"
 	"github.com/apache/incubator-yunikorn-core/pkg/scheduler/objects"
+	"github.com/apache/incubator-yunikorn-core/pkg/trace"
 	siCommon "github.com/apache/incubator-yunikorn-scheduler-interface/lib/go/common"
 	"github.com/apache/incubator-yunikorn-scheduler-interface/lib/go/si"
 )
@@ -101,14 +102,26 @@ func (cc *ClusterContext) setEventHandler(rmHandler handler.EventHandler) {
 // Process each partition in the scheduler, walk over each queue and app to check if anything can be scheduled.
 // This can be forked into a go routine per partition if needed to increase parallel allocations
 func (cc *ClusterContext) schedule() {
+	tracer := trace.GlobalSchedulerTracer()
+	tracer.Lock()
+	defer tracer.Unlock()
+	if err := tracer.InitContext(); err != nil {
+		log.Logger().Error("failed to init trace context", zap.Error(err))
+	}
+	tracer.StartSpan(trace.RootLevel, "", "")
+	stateSummary := ""
+
 	// schedule each partition defined in the cluster
 	for _, psc := range cc.GetPartitionMapClone() {
+		tracer.StartSpan(trace.PartitionLevel, "", psc.Name)
 		// if there are no resources in the partition just skip
 		if psc.root.GetMaxResource() == nil {
+			tracer.FinishActiveSpanWithState(trace.SkipState, trace.NoMaxResourceInfo)
 			continue
 		}
 		// a stopped partition does not allocate
 		if psc.isStopped() {
+			tracer.FinishActiveSpanWithState(trace.SkipState, trace.StoppedInfo)
 			continue
 		}
 		// try reservations first
@@ -128,7 +141,21 @@ func (cc *ClusterContext) schedule() {
 			} else {
 				cc.notifyRMNewAllocation(psc.RmID, alloc)
 			}
+			tracer.FinishActiveSpanWithState(alloc.Result.String(), "")
+			if stateSummary == "" || stateSummary == trace.SkipState {
+				stateSummary = alloc.Result.String()
+			}
+		} else {
+			tracer.FinishActiveSpanWithState(trace.SkipState, "")
+			if stateSummary == "" {
+				stateSummary = trace.SkipState
+			}
 		}
+	}
+	if stateSummary != "" {
+		// If there is no partition that have anything worth to trace,
+		// don't report this whole trace
+		tracer.FinishActiveSpanWithState(stateSummary, "")
 	}
 }
 

@@ -27,7 +27,7 @@ import (
 	"gotest.tools/assert"
 )
 
-func TestSchedulerTraceContextImpl(t *testing.T) {
+func TestContextImpl(t *testing.T) {
 	closeTracer, closer1, err := NewConstTracer("close-tracer", false)
 	assert.NilError(t, err)
 	defer closer1.Close()
@@ -90,7 +90,7 @@ func TestSchedulerTraceContextImpl(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &SchedulerTraceContextImpl{
+			s := &ContextImpl{
 				Tracer:       tt.fields.Tracer,
 				SpanStack:    tt.fields.SpanStack,
 				OnDemandFlag: tt.fields.OnDemandFlag,
@@ -168,7 +168,7 @@ func TestDelaySpan_ForbiddenFunctions(t *testing.T) {
 	}
 }
 
-func TestDelaySchedulerTraceContextImpl(t *testing.T) {
+func TestDelayContextImpl(t *testing.T) {
 	tracer, closer, err := NewConstTracer("test-tracer", true)
 	assert.NilError(t, err)
 	defer closer.Close()
@@ -209,7 +209,7 @@ func TestDelaySchedulerTraceContextImpl(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &DelaySchedulerTraceContextImpl{
+			d := &DelayContextImpl{
 				Tracer:     tt.fields.Tracer,
 				Spans:      tt.fields.Spans,
 				FilterTags: tt.fields.FilterTags,
@@ -281,7 +281,7 @@ func TestDelaySchedulerTraceContextImpl(t *testing.T) {
 	}
 }
 
-func TestDelaySchedulerTraceContextImpl_isMatch(t *testing.T) {
+func TestDelayContextImpl_isMatch(t *testing.T) {
 	closeTracer, closer1, err := NewConstTracer("close-tracer", false)
 	assert.NilError(t, err)
 	defer closer1.Close()
@@ -388,7 +388,7 @@ func TestDelaySchedulerTraceContextImpl_isMatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &DelaySchedulerTraceContextImpl{
+			d := &DelayContextImpl{
 				Tracer:     tt.fields.Tracer,
 				Spans:      tt.fields.Spans,
 				FilterTags: tt.fields.FilterTags,

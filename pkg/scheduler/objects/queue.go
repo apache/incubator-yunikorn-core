@@ -34,6 +34,7 @@ import (
 	"github.com/apache/incubator-yunikorn-core/pkg/log"
 	"github.com/apache/incubator-yunikorn-core/pkg/metrics"
 	"github.com/apache/incubator-yunikorn-core/pkg/scheduler/policies"
+	"github.com/apache/incubator-yunikorn-core/pkg/trace"
 	"github.com/apache/incubator-yunikorn-core/pkg/webservice/dao"
 )
 
@@ -905,11 +906,18 @@ func (sq *Queue) SetMaxResource(max *resources.Resource) {
 // Applications are sorted based on the application sortPolicy. Applications without pending resources are skipped.
 // Lock free call this all locks are taken when needed in called functions
 func (sq *Queue) TryAllocate(iterator func() interfaces.NodeIterator) *Allocation {
+	tracer := trace.GlobalSchedulerTracer()
+	tracer.StartSpan(trace.QueueLevel, trace.TryAllocatePhase, sq.QueuePath)
+	defer tracer.FinishActiveSpan()
+
 	if sq.IsLeafQueue() {
 		// get the headroom
 		headRoom := sq.getHeadRoom()
+		tracer.StartSpan(trace.QueueLevel, trace.SortAppsPhase, sq.QueuePath)
+		sortedApps := sq.sortApplications(true)
+		tracer.FinishActiveSpan()
 		// process the apps (filters out app without pending requests)
-		for _, app := range sq.sortApplications(true) {
+		for _, app := range sortedApps {
 			alloc := app.tryAllocate(headRoom, iterator)
 			if alloc != nil {
 				log.Logger().Debug("allocation found on queue",
@@ -920,8 +928,11 @@ func (sq *Queue) TryAllocate(iterator func() interfaces.NodeIterator) *Allocatio
 			}
 		}
 	} else {
+		tracer.StartSpan(trace.QueueLevel, trace.SortQueuesPhase, sq.QueuePath)
+		sortedQueues := sq.sortQueues()
+		tracer.FinishActiveSpan()
 		// process the child queues (filters out queues without pending requests)
-		for _, child := range sq.sortQueues() {
+		for _, child := range sortedQueues {
 			alloc := child.TryAllocate(iterator)
 			if alloc != nil {
 				return alloc
@@ -937,9 +948,16 @@ func (sq *Queue) TryAllocate(iterator func() interfaces.NodeIterator) *Allocatio
 // Applications are sorted based on the application sortPolicy. Applications without pending resources are skipped.
 // Lock free call this all locks are taken when needed in called functions
 func (sq *Queue) TryPlaceholderAllocate(iterator func() interfaces.NodeIterator, getnode func(string) *Node) *Allocation {
+	tracer := trace.GlobalSchedulerTracer()
+	tracer.StartSpan(trace.QueueLevel, trace.TryPlaceholderAllocatePhase, sq.QueuePath)
+	defer tracer.FinishActiveSpan()
+
 	if sq.IsLeafQueue() {
+		tracer.StartSpan(trace.QueueLevel, trace.SortAppsPhase, sq.QueuePath)
+		sortedApps := sq.sortApplications(true)
+		tracer.FinishActiveSpan()
 		// process the apps (filters out app without pending requests)
-		for _, app := range sq.sortApplications(true) {
+		for _, app := range sortedApps {
 			alloc := app.tryPlaceholderAllocate(iterator, getnode)
 			if alloc != nil {
 				log.Logger().Debug("allocation found on queue",
@@ -950,8 +968,11 @@ func (sq *Queue) TryPlaceholderAllocate(iterator func() interfaces.NodeIterator,
 			}
 		}
 	} else {
+		tracer.StartSpan(trace.QueueLevel, trace.SortQueuesPhase, sq.QueuePath)
+		sortedQueues := sq.sortQueues()
+		tracer.FinishActiveSpan()
 		// process the child queues (filters out queues without pending requests)
-		for _, child := range sq.sortQueues() {
+		for _, child := range sortedQueues {
 			alloc := child.TryPlaceholderAllocate(iterator, getnode)
 			if alloc != nil {
 				return alloc
@@ -984,6 +1005,10 @@ func (sq *Queue) GetQueueOutstandingRequests(total *[]*AllocationAsk) {
 // Applications are currently NOT sorted and are iterated over in a random order.
 // Lock free call this all locks are taken when needed in called functions
 func (sq *Queue) TryReservedAllocate(iterator func() interfaces.NodeIterator) *Allocation {
+	tracer := trace.GlobalSchedulerTracer()
+	tracer.StartSpan(trace.QueueLevel, trace.TryReservedAllocatePhase, sq.QueuePath)
+	defer tracer.FinishActiveSpan()
+
 	if sq.IsLeafQueue() {
 		// skip if it has no reservations
 		reservedCopy := sq.getReservedApps()
@@ -1015,8 +1040,11 @@ func (sq *Queue) TryReservedAllocate(iterator func() interfaces.NodeIterator) *A
 			}
 		}
 	} else {
+		tracer.StartSpan(trace.QueueLevel, trace.SortQueuesPhase, sq.QueuePath)
+		sortedQueues := sq.sortQueues()
+		tracer.FinishActiveSpan()
 		// process the child queues (filters out queues that have no pending requests)
-		for _, child := range sq.sortQueues() {
+		for _, child := range sortedQueues {
 			alloc := child.TryReservedAllocate(iterator)
 			if alloc != nil {
 				return alloc

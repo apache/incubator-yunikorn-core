@@ -21,10 +21,38 @@ package trace
 import (
 	"testing"
 
+	"github.com/opentracing/opentracing-go"
 	"gotest.tools/assert"
+
+	"github.com/apache/incubator-yunikorn-core/pkg/log"
 )
 
-// TestSchedulerTracerImpl tests SetParams and NewTraceContext
+func TestSchedulerTracerBase(t *testing.T) {
+	constTracer, closer, err := NewConstTracer("test", true)
+	assert.NilError(t, err)
+	defer closer.Close()
+	tracer := &SchedulerTracerBase{
+		context: &ContextImpl{
+			Tracer:       constTracer,
+			SpanStack:    []opentracing.Span{},
+			OnDemandFlag: false,
+		},
+	}
+
+	log.Logger().Info("---illegal operation---")
+	span := tracer.ActiveSpan()
+	assert.Equal(t, span, noopSpan)
+	tracer.FinishActiveSpan()
+	span = tracer.StartSpan("", "", "")
+	assert.Equal(t, span, noopSpan)
+
+	log.Logger().Info("---legal operation---")
+	span = tracer.StartSpan("foo", "", "")
+	assert.Assert(t, span != noopSpan)
+	tracer.FinishActiveSpan()
+}
+
+// TestSchedulerTracerImpl tests SetParams and InitTraceContext
 func TestSchedulerTracerImpl(t *testing.T) {
 	type fields struct {
 		SchedulerTracerImplParams *SchedulerTracerImplParams
@@ -85,14 +113,15 @@ func TestSchedulerTracerImpl(t *testing.T) {
 			assert.NilError(t, err)
 			defer tracer.Close()
 			tracer.(*SchedulerTracerImpl).SetParams(tt.fields.SchedulerTracerImplParams)
-			ctx := tracer.NewTraceContext()
-			switch typeInfo := ctx.(type) {
+			err = tracer.InitContext()
+			assert.NilError(t, err)
+			switch typeInfo := tracer.Context().(type) {
 			case nil:
 				t.Errorf("Nil context object, type: %T", typeInfo)
-			case *SchedulerTraceContextImpl:
+			case *ContextImpl:
 				assert.Equal(t, tt.wantType, 0)
-				assert.Equal(t, tt.wantOnDemand, ctx.(*SchedulerTraceContextImpl).OnDemandFlag)
-			case *DelaySchedulerTraceContextImpl:
+				assert.Equal(t, tt.wantOnDemand, tracer.Context().(*ContextImpl).OnDemandFlag)
+			case *DelayContextImpl:
 				assert.Equal(t, tt.wantType, 1)
 			default:
 				t.Errorf("Unknown type: %T", typeInfo)
